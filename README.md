@@ -16,6 +16,7 @@
  c. once list hits 5, finish
  step 4
  Profit
+
 ### Challenges we faced
   Logging in was challenge but not because of reasons that we expected. We were not getting any response
   from the server for the longest time, but we figured out that it was because we had to create a new
