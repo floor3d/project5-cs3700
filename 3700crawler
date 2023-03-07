@@ -158,7 +158,7 @@ class Crawler:
             request += form_data
 
         request +="\r\n"
-        print(request)
+#        print(request)
         decoded = self.send_msg(request) 
         if("sessionid" in decoded):
             sessid_idx = decoded.index("sessionid")
