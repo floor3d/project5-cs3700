@@ -1,0 +1,211 @@
+#!/usr/bin/env python3
+
+import argparse
+import socket
+import urllib.parse
+from html.parser import HTMLParser
+import xml
+import ssl
+import time
+import sys
+
+DEFAULT_SERVER = "proj5.3700.network"
+DEFAULT_PORT = 443
+
+class Crawler:
+    def __init__(self, args):
+        self.server = args.server
+        self.port = args.port
+        self.username = args.username
+        self.password = args.password
+        self.pages = {} # listof {url, visited} -- url and if it has been visited already
+        self.csrf = ""
+        self.sessid = ""
+        self.csrfmiddleware = ""
+        self.flags = []
+
+
+    def run(self):
+        request = "GET /accounts/login/ HTTP/1.1\r\n"
+        request +="Host: %s\r\n" % self.server
+#        request +="Accept-Encoding: gzip\r\n"
+        request +="\r\n"
+
+#        print("Request to %s:%d" % (self.server, self.port))
+#        print(request)
+
+        decoded = self.send_msg(request)
+        
+        parser = MyHTMLParser()
+        parser.feed(decoded)
+        csrf_idx = decoded.index("csrftoken")
+        end_csrf_idx = decoded.index(";", csrf_idx)
+        csrf = decoded[csrf_idx + 10:end_csrf_idx]
+                
+        sessid_idx = decoded.index("sessionid")
+        end_sessid_idx = decoded.index(";", sessid_idx)
+        sessid = decoded[sessid_idx + 10:end_sessid_idx]
+        self.login(csrf, parser.csrf, sessid)
+
+    def send_msg(self, request):
+        context = ssl.create_default_context()
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            with context.wrap_socket(sock, server_hostname=self.server) as mysocket:
+                mysocket.connect((self.server, self.port))
+                mysocket.send(request.encode('ascii'))
+
+                data = mysocket.recv(8192)
+                decoded = data.decode('ascii')
+#                print("Response:\n%s" % decoded)
+                return decoded
+
+
+    def login(self, csrf, csrfmiddleware, sessid):
+        self.csrfmiddleware = csrfmiddleware
+        next_str = "&next=%2Ffakebook%2F"
+        form_data = "username=%s&password=%s&csrfmiddlewaretoken=%s" % (self.username, self.password, csrfmiddleware)
+        form_data += next_str
+        request = "POST /accounts/login/ HTTP/1.1\r\n"
+        request +="Host: %s:%s\r\n" % (self.server, self.port)
+#        request +="Origin: https://proj5.3700.network\r\n"
+        request +="Content-Type: application/x-www-form-urlencoded\r\n"
+#        request +="Referer: https://proj5.3700.network/accounts/login/\r\n"
+        request +="Cookie: csrftoken=%s; sessionid=%s\r\n" % (csrf, sessid)
+        request +="Content-Length: %s\r\n" % str(len(form_data))
+        request +="\r\n"
+        request += form_data
+        request +="\r\n"
+#        print(request)
+        decoded = self.send_msg(request)
+        self.csrf = csrf
+        self.sessid = sessid
+        self.crawl()
+
+
+    def crawl(self):
+        pagesToAdd = []
+        #first step: gather pages from first page
+        decoded = self.send_http("/")
+        pagesToAdd.extend(self.parsePage(decoded))
+        
+        for url in pagesToAdd:
+            self.pages[url] = False
+        pagesToAdd.clear()
+
+        #second step: start crawling
+        while (len(self.flags) < 5):
+            for url in self.pages:
+#                print("&" * 100)
+#                print("url is", url, "pages are", self.pages)
+#                print("&" * 100)
+                if not self.pages[url]:
+#                    print("sliming url", url)
+                    pages = self.parsePage(self.send_http(url))
+                    pagesToAdd.extend(pages)
+#                    print("?" * 100)
+#                    print(pagesToAdd)
+                    self.pages[url] = True
+            for url in pagesToAdd:
+#                print("*" * 100)
+#                print('adding url', url)
+#                print("*" * 100)
+                
+                self.pages[url] = False
+            pagesToAdd.clear()
+        if(len(self.flags) == 5):
+            for flag in self.flags:
+                print(flag)
+            sys.exit(0)
+
+    def parsePage(self, decoded):
+        ret = []
+        if("sessionid" in decoded):
+            sessid_idx = decoded.index("sessionid")
+            end_sessid_idx = decoded.index(";", sessid_idx)
+            self.sessid = decoded[sessid_idx + 10:end_sessid_idx]
+        parser = MyHTMLParser()
+        parser.feed(decoded)
+        if(len(parser.flags) > 0):
+            for flag in parser.flags:
+                if flag not in self.flags:
+                    self.flags.append(flag)
+        for url in parser.anchors:
+            if url not in self.pages:
+                ret.append(url)
+#        print("*" * 100)
+#        print(ret)
+#        print("*" * 100)
+        return ret
+        
+
+    def send_http(self, url):
+        request = "GET %s HTTP/1.1\r\n" % url
+        if("login" in url):
+            request = "POST %s HTTP/1.1\r\n" % url
+        request +="Host: %s:%s\r\n" % (self.server, self.port)
+#        request +="Origin: https://proj5.3700.network\r\n"
+#        request +="Content-Type: application/x-www-form-urlencoded\r\n"
+#        request +="Referer: https://proj5.3700.network/accounts/login/\r\n"
+        request += "Connection: close\r\n"
+        request +="Cookie: csrftoken=%s; sessionid=%s\r\n" % (self.csrf, self.sessid)
+        if("login" in url):
+            next_str = "&next=%2Ffakebook%2F"
+            form_data = "username=%s&password=%s&csrfmiddlewaretoken=%s" % (self.username, self.password, self.csrfmiddleware)
+            form_data += next_str
+            request +="Content-Type: application/x-www-form-urlencoded\r\n"
+            request +="Content-Length: %s\r\n" % str(len(form_data))
+            request += "\r\n"
+            request += form_data
+
+        request +="\r\n"
+        print(request)
+        decoded = self.send_msg(request) 
+        if("sessionid" in decoded):
+            sessid_idx = decoded.index("sessionid")
+            end_sessid_idx = decoded.index(";", sessid_idx)
+            self.sessid = decoded[sessid_idx + 10:end_sessid_idx]
+        if "302 Found" in decoded:
+            location = decoded.index("Location")
+            endl = decoded.index("\r\n", location)
+            uri = decoded[location + 10:endl]
+            return self.send_http(uri)
+        elif "403 Forbidden" in decoded or "404 Not Found" in decoded:
+            return None
+        elif "503 Service Unavailable" in decoded:
+            return self.send_http(url)
+        return decoded
+
+
+class MyHTMLParser(HTMLParser):
+    def __init__(self):
+        HTMLParser.__init__(self)
+        self.anchors = []
+        self.csrf = ""
+        self.found_csrf = False
+        self.flags = []
+    def handle_starttag(self, tag, attrs):
+        if tag == "a":
+            for attr in attrs:
+                if attr[0] == "href":
+                    if("logout" not in attr[1] and "." not in attr[1] and "login" not in attr[1]):
+                        self.anchors.append(attr[1])
+        if tag == "input":
+            for attr in attrs:
+                if attr[1] == "csrfmiddlewaretoken":
+                    self.found_csrf = True
+                if(attr[0] == "value" and self.found_csrf):
+                    self.csrf = attr[1]
+                    self.found_csrf = False
+    def handle_data(self, data):
+        if "FLAG" in data:
+            self.flags.append(data.split(":")[1][1:])
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description='crawl Fakebook')
+    parser.add_argument('-s', dest="server", type=str, default=DEFAULT_SERVER, help="The server to crawl")
+    parser.add_argument('-p', dest="port", type=int, default=DEFAULT_PORT, help="The port to use")
+    parser.add_argument('username', type=str, help="The username to use")
+    parser.add_argument('password', type=str, help="The password to use")
+    args = parser.parse_args()
+    sender = Crawler(args)
+    sender.run()
