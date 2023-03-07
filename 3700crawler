@@ -119,6 +119,8 @@ class Crawler:
 
     def parsePage(self, decoded):
         ret = []
+        if(decoded is None):
+            return []
         if("sessionid" in decoded):
             sessid_idx = decoded.index("sessionid")
             end_sessid_idx = decoded.index(";", sessid_idx)
