@@ -29,6 +29,7 @@ class Crawler:
         #get csrf token
         request = "GET /accounts/login/ HTTP/1.1\r\n"
         request +="Host: %s\r\n" % self.server
+        request +="Connection: close\r\n"
         request +="\r\n"
 
 #        print("Request to %s:%d" % (self.server, self.port))
@@ -36,16 +37,21 @@ class Crawler:
 
         decoded = self.send_msg(request)
         
+#        print(decoded)
         #find csrf token and sessionid to use in login
         parser = MyHTMLParser()
         parser.feed(decoded)
         csrf_idx = decoded.index("csrftoken")
         end_csrf_idx = decoded.index(";", csrf_idx)
         csrf = decoded[csrf_idx + 10:end_csrf_idx]
+        self.csrf = csrf
                 
         sessid_idx = decoded.index("sessionid")
         end_sessid_idx = decoded.index(";", sessid_idx)
         sessid = decoded[sessid_idx + 10:end_sessid_idx]
+        if(parser.csrf == ""):
+            self.run()
+            return
         self.login(csrf, parser.csrf, sessid)
 
     
@@ -56,8 +62,10 @@ class Crawler:
             with context.wrap_socket(sock, server_hostname=self.server) as mysocket:
                 mysocket.connect((self.server, self.port))
                 mysocket.send(request.encode('ascii'))
+#                print(request)
 
-                data = mysocket.recv(8192)
+                data = mysocket.recv(16384)
+            
                 decoded = data.decode('ascii')
 #                print("Response:\n%s" % decoded)
                 #return the server's response
@@ -72,10 +80,11 @@ class Crawler:
         form_data += next_str
         request = "POST /accounts/login/ HTTP/1.1\r\n"
         request +="Host: %s:%s\r\n" % (self.server, self.port)
+        request +="Connection: close\r\n"
 #        request +="Origin: https://proj5.3700.network\r\n"
         request +="Content-Type: application/x-www-form-urlencoded\r\n"
 #        request +="Referer: https://proj5.3700.network/accounts/login/\r\n"
-        request +="Cookie: csrftoken=%s; sessionid=%s\r\n" % (csrf, sessid)
+        request +="Cookie: csrftoken=%s; sessionid=%s\r\n" % (self.csrf, sessid)
         request +="Content-Length: %s\r\n" % str(len(form_data))
         request +="\r\n"
         request += form_data
@@ -89,6 +98,7 @@ class Crawler:
 
     #crawl site. find anchor tags, add to list, crawl them too.
     def crawl(self):
+#        print("*" * 100)
         pagesToAdd = []
         #first step: gather pages from first page
         decoded = self.send_http("/")
@@ -102,7 +112,10 @@ class Crawler:
         while (len(self.flags) < 5):
             for url in self.pages:
                 if not self.pages[url]:
-                    pages = self.parsePage(self.send_http(url))
+                    decoded = ""
+                    while "<" not in decoded:
+                        decoded = self.send_http(url)
+                    pages = self.parsePage(decoded)
                     pagesToAdd.extend(pages)
                     self.pages[url] = True
             for url in pagesToAdd:
@@ -125,6 +138,11 @@ class Crawler:
             sessid_idx = decoded.index("sessionid")
             end_sessid_idx = decoded.index(";", sessid_idx)
             self.sessid = decoded[sessid_idx + 10:end_sessid_idx]
+        if("csrftoken" in decoded):
+#            print("%&%&" * 25)
+            csrftoken_idx = decoded.index("csrftoken")
+            end_csrftoken_idx = decoded.index(";", csrftoken_idx)
+            self.csrf = decoded[csrftoken_idx + 10:end_csrftoken_idx]
         parser = MyHTMLParser()
         parser.feed(decoded)
         if(len(parser.flags) > 0):
@@ -159,10 +177,18 @@ class Crawler:
 
         request +="\r\n"
         decoded = self.send_msg(request) 
+#        print("the decoded response is" + " ^" * 50)
+#        print(decoded)
+#        print("^" * 50)
         if("sessionid" in decoded):
             sessid_idx = decoded.index("sessionid")
             end_sessid_idx = decoded.index(";", sessid_idx)
             self.sessid = decoded[sessid_idx + 10:end_sessid_idx]
+        if("csrftoken" in decoded):
+#            print("%"*100)
+            csrftoken_idx = decoded.index("csrftoken")
+            end_csrftoken_idx = decoded.index(";", csrftoken_idx)
+            self.csrf = decoded[csrftoken_idx + 10:end_csrftoken_idx]
 
         #handle special codes
 
@@ -171,6 +197,10 @@ class Crawler:
             location = decoded.index("Location")
             endl = decoded.index("\r\n", location)
             uri = decoded[location + 10:endl]
+            if("csrftoken" in decoded):
+                csrftoken_idx = decoded.index("csrftoken")
+                end_csrftoken_idx = decoded.index(";", csrftoken_idx)
+                self.csrf = decoded[csrftoken_idx + 10:end_csrftoken_idx]
             return self.send_http(uri)
         elif "403 Forbidden" in decoded or "404 Not Found" in decoded:
             #something went wrong. drop it
