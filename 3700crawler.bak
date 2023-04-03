@@ -8,7 +8,6 @@ import xml
 import ssl
 import time
 import sys
-import select
 from datetime import datetime
 DEFAULT_SERVER = "proj5.3700.network"
 DEFAULT_PORT = 443
@@ -24,15 +23,14 @@ class Crawler:
         self.sessid = "" #sessid to include in each request
         self.csrfmiddleware = "" #middleware token to include in logins
         self.flags = [] # flags to print at the end
-        self.socket = "" # to connect to server
 
 
     def run(self):
-#        print(datetime.now())
+        print(datetime.now())
         #get csrf token
         request = "GET /accounts/login/ HTTP/1.1\r\n"
         request +="Host: %s\r\n" % self.server
-        request +="Connection: keep-alive\r\n"
+        request +="Connection: close\r\n"
         request +="\r\n"
 
 #        print("Request to %s:%d" % (self.server, self.port))
@@ -44,16 +42,14 @@ class Crawler:
         #find csrf token and sessionid to use in login
         parser = MyHTMLParser()
         parser.feed(decoded)
-        csrf = ""
-        if("csrftoken" in decoded):
-            csrf_idx = decoded.index("csrftoken")
-            end_csrf_idx = decoded.index(";", csrf_idx)
-            csrf = decoded[csrf_idx + 10:end_csrf_idx]
-            self.csrf = csrf
-        if("sessionid" in decoded):
-            sessid_idx = decoded.index("sessionid")
-            end_sessid_idx = decoded.index(";", sessid_idx)
-            self.sessid = decoded[sessid_idx + 10:end_sessid_idx]
+        csrf_idx = decoded.index("csrftoken")
+        end_csrf_idx = decoded.index(";", csrf_idx)
+        csrf = decoded[csrf_idx + 10:end_csrf_idx]
+        self.csrf = csrf
+                
+        sessid_idx = decoded.index("sessionid")
+        end_sessid_idx = decoded.index(";", sessid_idx)
+        self.sessid = decoded[sessid_idx + 10:end_sessid_idx]
         if(parser.csrf == ""):
             self.run()
             return
@@ -62,34 +58,28 @@ class Crawler:
     
     #sends message to server: establish tls connection & send message
     def send_msg(self, request):
-        if(self.socket == ""):
-            self.socket = self.connect()
-        self.socket.send(request.encode('ascii'))
-#        print(request)
-        data = b""
-        
-        while True:
-            read, _, _ = select.select([self.socket], [], [], 0.1)
-            if read:
-                data += self.socket.recv(65535)
-            else:
-                break
+        context = ssl.create_default_context()
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            with context.wrap_socket(sock, server_hostname=self.server) as mysocket:
+                mysocket.connect((self.server, self.port))
+                mysocket.send(request.encode('ascii'))
+#                print(request)
+
+                data = mysocket.recv(16384)
             
-        decoded = data.decode('ascii')
-#        print("Response:\n%s" % decoded)
-        #update session id or csrf token if necessary
-        if("sessionid" in decoded):
-            sessid_idx = decoded.index("sessionid")
-            end_sessid_idx = decoded.index(";", sessid_idx)
-            self.sessid = decoded[sessid_idx + 10:end_sessid_idx]
-        if("csrftoken" in decoded):
-            csrftoken_idx = decoded.index("csrftoken")
-            end_csrftoken_idx = decoded.index(";", csrftoken_idx)
-            self.csrf = decoded[csrftoken_idx + 10:end_csrftoken_idx]
-        if("Connection: close" in decoded):
-            self.socket = ""
-        #return the server's response
-        return decoded
+                decoded = data.decode('ascii')
+                print("Response:\n%s" % decoded)
+                #update session id or csrf token if necessary
+                if("sessionid" in decoded):
+                    sessid_idx = decoded.index("sessionid")
+                    end_sessid_idx = decoded.index(";", sessid_idx)
+                    self.sessid = decoded[sessid_idx + 10:end_sessid_idx]
+                if("csrftoken" in decoded):
+                    csrftoken_idx = decoded.index("csrftoken")
+                    end_csrftoken_idx = decoded.index(";", csrftoken_idx)
+                    self.csrf = decoded[csrftoken_idx + 10:end_csrftoken_idx]
+                #return the server's response
+                return decoded
 
 
     #log in to fakebook
@@ -100,7 +90,7 @@ class Crawler:
         form_data += next_str
         request = "POST /accounts/login/ HTTP/1.1\r\n"
         request +="Host: %s:%s\r\n" % (self.server, self.port)
-        request +="Connection: keep-alive\r\n"
+        request +="Connection: close\r\n"
         request +="Content-Type: application/x-www-form-urlencoded\r\n"
         request +="Cookie: csrftoken=%s; sessionid=%s\r\n" % (self.csrf, self.sessid)
         request +="Content-Length: %s\r\n" % str(len(form_data))
@@ -108,9 +98,7 @@ class Crawler:
         request += form_data
         request +="\r\n"
 #        print(request)
-        decoded = ""
-        while("<" not in decoded and "302" not in decoded):
-            decoded = self.send_msg(request)
+        decoded = self.send_msg(request)
         self.crawl()
 
 
@@ -129,15 +117,12 @@ class Crawler:
 
         #second step: start crawling
         while (len(self.flags) < 5):
-#            print("here")
             for url in self.pages:
                 if not self.pages[url]:
                     decoded = ""
                     while "<" not in decoded:
                         decoded = self.send_http(url)
                     pages = self.parsePage(decoded)
-#                    if(len(pages) < 1):
-#                        print("PAUSE?")
                     pagesToAdd.extend(pages)
                     self.pages[url] = True
             for url in pagesToAdd:
@@ -148,7 +133,7 @@ class Crawler:
             # we are finished
             for flag in self.flags:
                 print(flag)
-#            print(datetime.now())
+            print(datetime.now())
             sys.exit(0)
 
 
@@ -180,7 +165,8 @@ class Crawler:
         if("login" in url):
             request = "POST %s HTTP/1.1\r\n" % url
         request +="Host: %s:%s\r\n" % (self.server, self.port)
-        request += "Connection: keep-alive\r\n"
+        #ensure connection close. we remake connection every time
+        request += "Connection: close\r\n"
         request +="Cookie: csrftoken=%s; sessionid=%s\r\n" % (self.csrf, self.sessid)
         if("login" in url):
             #need to log in. we need to send form data
@@ -219,15 +205,6 @@ class Crawler:
             #try again until it works
             return self.send_http(url)
         return decoded
-
-
-#connect to server
-    def connect(self):
-        context = ssl.create_default_context()
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        mysocket = context.wrap_socket(sock, server_hostname=self.server) 
-        mysocket.connect((self.server, self.port))
-        return mysocket
 
 
 #html parser class. extracts csrf token, anchor tag values, and flags
